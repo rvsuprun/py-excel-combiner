@@ -1,0 +1,23 @@
+{
+    "folder_path": "C:/Users/rvsup/py exel/F1",
+    "sheet_name": "Template",
+    "header_row": 4,
+    "data_start_row": 7,
+    "columns_to_extract": "SKU, Status",
+    "output_file": "_2_combined_data.csv",
+    "input_folder": "C:/Users/rvsup/Downloads/Category+Listings+Report+07-14-2025",
+    "output_folder": "C:/Users/rvsup/py exel",
+    "output_filename": "Report_file",
+    "output_format": "csv",
+    "txt_delimiter": "",
+    "lookup_file_path": "C:/Users/rvsup/Downloads/All+Listings+Report+07-20-2025.txt",
+    "source_key_column": "SKU",
+    "lookup_key_column": "seller-sku",
+    "lookup_columns_to_add": "asin1, seller-sku",
+    "enable_merge": true,
+    "enable_txt_processing": false,
+    "lookup_txt_delimiter": "\\t",
+    "enable_lookup_txt": true,
+    "lookup_header_row": 1,
+    "lookup_data_start_row": 2
+}

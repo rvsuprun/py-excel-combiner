@@ -1,0 +1,290 @@
+import pandas as pd
+import os
+import glob
+import json
+import threading
+import tkinter as tk
+from tkinter import ttk, filedialog, messagebox, scrolledtext
+
+# --- CONFIGURATION ---
+CONFIG_FILE = 'config.json'
+
+# --- Settings Management ---
+
+def load_settings():
+    """Loads settings from a JSON file. Returns default values if the file doesn't exist."""
+    try:
+        with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        # Default values
+        return {
+            "input_folder": "",
+            "output_folder": "",
+            "sheet_name": "Sheet1",
+            "header_row": 5,
+            "data_start_row": 7,
+            "columns_to_extract": "SKU, Price, Quantity",
+            "output_filename": "combined_data",
+            "output_format": "csv"
+        }
+
+def save_settings(settings):
+    """Saves settings to a JSON file."""
+    with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
+        json.dump(settings, f, indent=4)
+
+# --- Core File Processing Logic ---
+
+def process_files(settings, log_callback):
+    """
+    Core logic to process files. Now handles CSV and choice of output format.
+    """
+    input_folder = settings['input_folder']
+    header_row_index = settings['header_row'] - 1
+    data_start_row_index = settings['data_start_row'] - 1
+    columns_to_extract = [col.strip() for col in settings['columns_to_extract'].split(',') if col.strip()]
+
+    log_callback(f"--- Starting to process files in folder: {input_folder} ---\n")
+    
+    file_patterns = ["*.xlsx", "*.xlsm", "*.csv"]
+    all_files = []
+    for pattern in file_patterns:
+        all_files.extend(glob.glob(os.path.join(input_folder, pattern)))
+
+    if not all_files:
+        log_callback("ERROR: No .xlsx, .xlsm, or .csv files found in the specified folder.\n")
+        return
+
+    log_callback(f"Found {len(all_files)} files to process.\n")
+    all_data_frames = []
+
+    for i, file_path in enumerate(all_files, 1):
+        log_callback(f"\n[{i}/{len(all_files)}] -> Processing file: {os.path.basename(file_path)}\n")
+        try:
+            if file_path.endswith(('.xlsx', '.xlsm')):
+                df_full = pd.read_excel(file_path, sheet_name=settings['sheet_name'], header=None)
+            else: # It's a CSV file
+                df_full = pd.read_csv(file_path, header=None, on_bad_lines='skip', encoding='utf-8')
+
+            if len(df_full) < data_start_row_index:
+                log_callback(f"  - WARNING: Not enough rows in the file. Skipping.\n")
+                continue
+
+            column_names = df_full.iloc[header_row_index]
+            data_df = df_full.iloc[data_start_row_index:].copy()
+            data_df.columns = column_names
+            data_df.reset_index(drop=True, inplace=True)
+            
+            if columns_to_extract:
+                data_df.columns = data_df.columns.astype(str)
+                existing_cols = [col for col in columns_to_extract if col in data_df.columns]
+                missing_cols = [col for col in columns_to_extract if col not in data_df.columns]
+                
+                if missing_cols:
+                    log_callback(f"  - WARNING: Missing columns: {', '.join(missing_cols)}\n")
+                if not existing_cols:
+                    log_callback("  - WARNING: None of the specified columns were found. Skipping file.\n")
+                    continue
+                data_df = data_df[existing_cols]
+
+            data_df['source_file'] = os.path.basename(file_path)
+            all_data_frames.append(data_df)
+            log_callback(f"  - Successfully extracted {len(data_df)} rows.\n")
+
+        except Exception as e:
+            log_callback(f"  - ERROR while processing file: {e}\n")
+
+    if not all_data_frames:
+        log_callback("\nCould not extract data from any file.\n")
+        return
+
+    log_callback("\n--- Combining all data... ---\n")
+    final_df = pd.concat(all_data_frames, ignore_index=True)
+
+    output_folder = settings['output_folder']
+    output_filename = settings['output_filename']
+    output_format = settings['output_format']
+    full_output_path = os.path.join(output_folder, f"{output_filename}.{output_format}")
+
+    try:
+        if output_format == 'xlsx':
+            final_df.to_excel(full_output_path, index=False)
+        else: # Default to CSV
+            final_df.to_csv(full_output_path, index=False, encoding='utf-8-sig')
+        
+        log_callback(f"\n🎉 Done! All data has been combined into file: {full_output_path}\n")
+        log_callback(f"Total rows processed: {len(final_df)}\n")
+        messagebox.showinfo("Done", f"Processing complete! Result saved in {full_output_path}")
+    except Exception as e:
+        log_callback(f"  - ERROR saving the final report: {e}\n")
+        messagebox.showerror("Save Error", f"Could not save the report file:\n{e}")
+
+
+# --- Graphical User Interface (GUI) ---
+
+class SettingsWindow(tk.Toplevel):
+    def __init__(self, parent):
+        super().__init__(parent)
+        
+        self.transient(parent)
+        self.grab_set()
+
+        self.title("Settings")
+        self.geometry("600x380")
+        self.parent = parent
+        self.settings = load_settings()
+
+        self.entries = {}
+        # --- Input Settings ---
+        input_frame = ttk.LabelFrame(self, text="Input Settings")
+        input_frame.pack(padx=10, pady=10, fill="x")
+
+        ttk.Label(input_frame, text="Folder with source files:").grid(row=0, column=0, padx=10, pady=5, sticky="w")
+        self.entries['input_folder'] = ttk.Entry(input_frame, width=60)
+        self.entries['input_folder'].grid(row=0, column=1, padx=10, pady=5, sticky="ew")
+        ttk.Button(input_frame, text="Browse...", command=self.browse_input_folder).grid(row=0, column=2, padx=5, pady=5)
+        
+        ttk.Label(input_frame, text="Sheet Name (for Excel files):").grid(row=1, column=0, padx=10, pady=5, sticky="w")
+        self.entries['sheet_name'] = ttk.Entry(input_frame)
+        self.entries['sheet_name'].grid(row=1, column=1, padx=10, pady=5, sticky="ew")
+
+        ttk.Label(input_frame, text="Header Row Number:").grid(row=2, column=0, padx=10, pady=5, sticky="w")
+        self.entries['header_row'] = ttk.Entry(input_frame)
+        self.entries['header_row'].grid(row=2, column=1, padx=10, pady=5, sticky="ew")
+
+        ttk.Label(input_frame, text="Data Start Row Number:").grid(row=3, column=0, padx=10, pady=5, sticky="w")
+        self.entries['data_start_row'] = ttk.Entry(input_frame)
+        self.entries['data_start_row'].grid(row=3, column=1, padx=10, pady=5, sticky="ew")
+        
+        ttk.Label(input_frame, text="Columns to extract (comma-separated):").grid(row=4, column=0, padx=10, pady=5, sticky="w")
+        self.entries['columns_to_extract'] = ttk.Entry(input_frame)
+        self.entries['columns_to_extract'].grid(row=4, column=1, padx=10, pady=5, sticky="ew")
+
+        input_frame.columnconfigure(1, weight=1)
+
+        # --- Output Settings ---
+        output_frame = ttk.LabelFrame(self, text="Output Settings")
+        output_frame.pack(padx=10, pady=10, fill="x")
+
+        ttk.Label(output_frame, text="Folder to save the report:").grid(row=0, column=0, padx=10, pady=5, sticky="w")
+        self.entries['output_folder'] = ttk.Entry(output_frame, width=60)
+        self.entries['output_folder'].grid(row=0, column=1, padx=10, pady=5, sticky="ew")
+        ttk.Button(output_frame, text="Browse...", command=self.browse_output_folder).grid(row=0, column=2, padx=5, pady=5)
+
+        ttk.Label(output_frame, text="Report Filename (without extension):").grid(row=1, column=0, padx=10, pady=5, sticky="w")
+        self.entries['output_filename'] = ttk.Entry(output_frame)
+        self.entries['output_filename'].grid(row=1, column=1, padx=10, pady=5, sticky="ew")
+
+        ttk.Label(output_frame, text="Report Format:").grid(row=2, column=0, padx=10, pady=5, sticky="w")
+        self.entries['output_format'] = ttk.Combobox(output_frame, values=['csv', 'xlsx'], state="readonly")
+        self.entries['output_format'].grid(row=2, column=1, padx=10, pady=5, sticky="ew")
+
+        output_frame.columnconfigure(1, weight=1)
+        
+        # --- Load current settings into fields ---
+        for key, widget in self.entries.items():
+            if isinstance(widget, ttk.Combobox):
+                widget.set(self.settings.get(key, "csv"))
+            else:
+                widget.delete(0, tk.END)
+                widget.insert(0, self.settings.get(key, ""))
+        
+        # --- Save Button ---
+        ttk.Button(self, text="Save Settings", command=self.save_and_close).pack(pady=10)
+
+    def browse_input_folder(self):
+        folder_selected = filedialog.askdirectory()
+        if folder_selected:
+            self.entries['input_folder'].delete(0, tk.END)
+            self.entries['input_folder'].insert(0, folder_selected)
+
+    def browse_output_folder(self):
+        folder_selected = filedialog.askdirectory()
+        if folder_selected:
+            self.entries['output_folder'].delete(0, tk.END)
+            self.entries['output_folder'].insert(0, folder_selected)
+
+    def save_and_close(self):
+        for key, widget in self.entries.items():
+            self.settings[key] = widget.get()
+
+        for key in ["header_row", "data_start_row"]:
+            try:
+                self.settings[key] = int(self.settings[key])
+            except (ValueError, TypeError):
+                messagebox.showerror("Error", f"Field '{key}' must be a number!")
+                return
+        
+        if not self.settings.get('output_folder', '').strip():
+            self.settings['output_folder'] = os.getcwd()
+            self.entries['output_folder'].delete(0, tk.END)
+            self.entries['output_folder'].insert(0, self.settings['output_folder'])
+            
+        save_settings(self.settings)
+        messagebox.showinfo("Saved", "Settings saved successfully.")
+        self.destroy()
+
+
+class App(tk.Tk):
+    def __init__(self):
+        super().__init__()
+        self.title("File Combiner v2.1")
+        self.geometry("700x500")
+
+        top_frame = ttk.Frame(self)
+        top_frame.pack(pady=10, padx=10, fill="x")
+
+        self.settings_btn = ttk.Button(top_frame, text="Settings", command=self.open_settings)
+        self.settings_btn.pack(side="left", padx=5)
+
+        self.start_btn = ttk.Button(top_frame, text="Start", command=self.start_processing_thread)
+        self.start_btn.pack(side="left", padx=5)
+
+        self.log_area = scrolledtext.ScrolledText(self, wrap=tk.WORD, state='disabled')
+        self.log_area.pack(pady=10, padx=10, expand=True, fill="both")
+
+    def open_settings(self):
+        SettingsWindow(self)
+
+    def log(self, message):
+        self.log_area.configure(state='normal')
+        self.log_area.insert(tk.END, message)
+        self.log_area.configure(state='disabled')
+        self.log_area.see(tk.END)
+
+    def start_processing_thread(self):
+        self.start_btn.config(state="disabled")
+        self.log_area.config(state="normal")
+        self.log_area.delete(1.0, tk.END)
+        self.log_area.config(state="disabled")
+
+        thread = threading.Thread(target=self.run_processing, daemon=True)
+        thread.start()
+
+    def run_processing(self):
+        try:
+            settings = load_settings()
+            
+            required_fields = [
+                "input_folder", "output_folder", "sheet_name", 
+                "header_row", "data_start_row", "output_filename"
+            ]
+            missing_fields = [field for field in required_fields if not str(settings.get(field, '')).strip()]
+
+            if missing_fields:
+                error_message = f"Please fill in all required fields in Settings: {', '.join(missing_fields)}"
+                self.log(f"ERROR: {error_message}\n")
+                messagebox.showerror("Missing Settings", error_message)
+                return
+
+            process_files(settings, self.log)
+        except Exception as e:
+            self.log(f"CRITICAL ERROR: {e}\n")
+            messagebox.showerror("Critical Error", str(e))
+        finally:
+            self.after(0, lambda: self.start_btn.config(state="normal"))
+
+if __name__ == "__main__":
+    app = App()
+    app.mainloop()
